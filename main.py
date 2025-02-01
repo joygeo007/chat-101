@@ -252,7 +252,7 @@ def chat_interface():
     if st.button("Logout"):
         message_store.save_messages()
         st.session_state.auth = False
-        st.experimental_rerun()
+        st.rerun()
 
 # Main App
 if not st.session_state.auth:
