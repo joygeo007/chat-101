@@ -3,6 +3,7 @@ import base64
 import json
 import requests
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet
@@ -12,6 +13,16 @@ from github import Github, InputFileContent
 UPLOAD_DIR = "uploads"
 Path(UPLOAD_DIR).mkdir(exist_ok=True)
 VALID_USERS = {"Nana": "Kaoru", "Kaoru": "Nana"}
+BUFFER_SIZE = 5  # Save to GitHub after 5 messages
+DARK_MODE = True  # Set to False for light mode
+
+# Color Scheme
+COLORS = {
+    "background": "#0E1117" if DARK_MODE else "#FFFFFF",
+    "user_message": "#2B547E" if DARK_MODE else "#89CFF0",
+    "other_message": "#4A235A" if DARK_MODE else "#F8C8DC",
+    "text": "#FFFFFF" if DARK_MODE else "#000000"
+}
 
 # Initialize GitHub
 def github_connect():
@@ -31,7 +42,6 @@ def decrypt(encrypted_data):
 
 # File Handling
 def store_file(file):
-    # Encrypt and store locally (for demo)
     encrypted = cipher.encrypt(file.read())
     file_path = f"{UPLOAD_DIR}/{datetime.now().timestamp()}_{file.name}"
     
@@ -46,28 +56,21 @@ def read_file(file_path):
 
 # GitHub Data Management
 def get_messages():
-    repo, gist = github_connect()
-    content = gist.files["chat_history.json"].content
-    return json.loads(decrypt(content))
+    try:
+        repo, gist = github_connect()
+        content = gist.files["chat_history.json"].content
+        return json.loads(decrypt(content))
+    except:
+        return []
 
 def save_messages(messages):
     try:
         repo, gist = github_connect()
         encrypted = encrypt(json.dumps(messages))
-        
-        # Create proper InputFileContent objects
-        gist_file = gist.files.get("chat_history.json")
-        if gist_file:
-            new_content = InputFileContent(encrypted)
-            gist.edit(files={"chat_history.json": new_content})
-        else:
-            # If file doesn't exist yet, create it
-            gist.edit(files={"chat_history.json": InputFileContent(encrypted)})
-            
+        gist.edit(files={"chat_history.json": InputFileContent(encrypted)})
     except Exception as e:
         st.error(f"Error saving messages: {str(e)}")
-        raise e
-        
+
 # UI Setup
 st.set_page_config(
     page_title="Secure Chat",
@@ -76,10 +79,43 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Authentication
+# Custom CSS
+st.markdown(f"""
+<style>
+    body {{ background-color: {COLORS['background']}; }}
+    .message {{
+        padding: 1rem;
+        border-radius: 15px;
+        margin: 10px 0;
+        max-width: 70%;
+        color: {COLORS['text']};
+        word-break: break-word;
+    }}
+    .user-message {{ 
+        background-color: {COLORS['user_message']};
+        margin-left: auto;
+    }}
+    .other-message {{
+        background-color: {COLORS['other_message']};
+        margin-right: auto;
+    }}
+    .timestamp {{
+        font-size: 0.8rem;
+        opacity: 0.7;
+        margin-top: 5px;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# Session State Management
 if 'auth' not in st.session_state:
     st.session_state.auth = False
+if 'messages' not in st.session_state:
+    st.session_state.messages = get_messages()
+if 'last_saved' not in st.session_state:
+    st.session_state.last_saved = 0
 
+# Authentication
 def login():
     with st.form("login"):
         user = st.text_input("Username")
@@ -96,32 +132,20 @@ def login():
 def chat_interface():
     st.title(f"💌 {st.session_state.user}'s Secure Chat")
     
-    # Load messages
-    try:
-        messages = get_messages()
-    except:
-        messages = []
-    
-    # Display messages
-    for msg in messages:
+    # Display messages from session state
+    for msg in st.session_state.messages:
         col = st.columns([1, 20])[1]
         with col:
-            if msg["type"] == "text":
-                st.markdown(f"""
-                <div style='background: {"#ffd1dc" if msg["sender"] == st.session_state.user else "#cbe5ff"};
-                            padding: 1rem;
-                            border-radius: 1rem;
-                            margin: 0.5rem 0;'>
-                    <strong>{msg["sender"]}</strong><br>
-                    {msg["content"]}
-                    <div style='font-size:0.8rem;color:#666;'>
-                        {msg["timestamp"]}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
+            content = msg["content"]
+            if msg["type"].startswith("image"):
                 try:
-                    file_data = read_file(msg["content"])
+                    file_data = read_file(content)
+                    st.image(file_data, caption=msg.get("filename", ""), width=300)
+                except Exception as e:
+                    st.error(f"Error loading image: {str(e)}")
+            elif msg["type"] != "text":
+                try:
+                    file_data = read_file(content)
                     st.download_button(
                         label=f"📎 {msg['filename']}",
                         data=file_data,
@@ -130,6 +154,16 @@ def chat_interface():
                     )
                 except Exception as e:
                     st.error(f"Error loading file: {str(e)}")
+            else:
+                st.markdown(f"""
+                <div class="message {'user-message' if msg["sender"] == st.session_state.user else 'other-message'}">
+                    <strong>{msg["sender"]}</strong><br>
+                    {content}
+                    <div class="timestamp">
+                        {msg["timestamp"]}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
     # Message input
     with st.form("chat", clear_on_submit=True):
@@ -154,25 +188,31 @@ def chat_interface():
                     "filename": file.name
                 })
             
-            messages.append(new_msg)
-            save_messages(messages)
+            st.session_state.messages.append(new_msg)
+            
+            # Save to GitHub if buffer size reached
+            if len(st.session_state.messages) - st.session_state.last_saved >= BUFFER_SIZE:
+                save_messages(st.session_state.messages)
+                st.session_state.last_saved = len(st.session_state.messages)
+            
             st.rerun()
 
+    # Auto-save every 2 minutes
+    if time.time() - st.session_state.get("last_auto_save", 0) > 120:
+        save_messages(st.session_state.messages)
+        st.session_state.last_auto_save = time.time()
+        st.rerun()
+
     if st.button("Logout"):
+        save_messages(st.session_state.messages)
         st.session_state.auth = False
         st.rerun()
+
+    # Auto-refresh every 5 seconds
+    st.experimental_rerun()
 
 # Main App
 if not st.session_state.auth:
     login()
 else:
     chat_interface()
-
-# Auto-refresh every 5 seconds
-st.markdown("""
-<script>
-setTimeout(function(){
-    window.location.reload();
-}, 5000);
-</script>
-""", unsafe_allow_html=True)
