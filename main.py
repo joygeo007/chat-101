@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet
-from github import Github
+from github import Github, InputFileContent
 
 # Configuration
 UPLOAD_DIR = "uploads"
@@ -51,10 +51,23 @@ def get_messages():
     return json.loads(decrypt(content))
 
 def save_messages(messages):
-    repo, gist = github_connect()
-    encrypted = encrypt(json.dumps(messages))
-    gist.edit(files={"chat_history.json": {"content": encrypted}})
-
+    try:
+        repo, gist = github_connect()
+        encrypted = encrypt(json.dumps(messages))
+        
+        # Create proper InputFileContent objects
+        gist_file = gist.files.get("chat_history.json")
+        if gist_file:
+            new_content = InputFileContent(encrypted)
+            gist.edit(files={"chat_history.json": new_content})
+        else:
+            # If file doesn't exist yet, create it
+            gist.edit(files={"chat_history.json": InputFileContent(encrypted)})
+            
+    except Exception as e:
+        st.error(f"Error saving messages: {str(e)}")
+        raise e
+        
 # UI Setup
 st.set_page_config(
     page_title="Secure Chat",
