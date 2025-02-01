@@ -4,10 +4,12 @@ import json
 import requests
 import os
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet
 from github import Github, InputFileContent
+from streamlit_autorefresh import st_autorefresh
 
 # Configuration
 UPLOAD_DIR = "uploads"
@@ -54,22 +56,39 @@ def read_file(file_path):
     with open(file_path, "rb") as f:
         return cipher.decrypt(f.read())
 
-# GitHub Data Management
-def get_messages():
-    try:
-        repo, gist = github_connect()
-        content = gist.files["chat_history.json"].content
-        return json.loads(decrypt(content))
-    except:
-        return []
+# Message Store with Thread Safety
+class MessageStore:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.messages = self.load_messages()
 
-def save_messages(messages):
-    try:
-        repo, gist = github_connect()
-        encrypted = encrypt(json.dumps(messages))
-        gist.edit(files={"chat_history.json": InputFileContent(encrypted)})
-    except Exception as e:
-        st.error(f"Error saving messages: {str(e)}")
+    def load_messages(self):
+        try:
+            repo, gist = github_connect()
+            content = gist.files["chat_history.json"].content
+            return json.loads(decrypt(content))
+        except:
+            return []
+
+    def add_message(self, msg):
+        with self.lock:
+            self.messages.append(msg)
+
+    def get_messages(self):
+        with self.lock:
+            return self.messages.copy()
+
+    def save_messages(self):
+        try:
+            repo, gist = github_connect()
+            encrypted = encrypt(json.dumps(self.messages))
+            gist.edit(files={"chat_history.json": InputFileContent(encrypted)})
+        except Exception as e:
+            st.error(f"Error saving messages: {str(e)}")
+
+@st.cache_resource
+def get_message_store():
+    return MessageStore()
 
 # UI Setup
 st.set_page_config(
@@ -110,10 +129,10 @@ st.markdown(f"""
 # Session State Management
 if 'auth' not in st.session_state:
     st.session_state.auth = False
-if 'messages' not in st.session_state:
-    st.session_state.messages = get_messages()
 if 'last_saved' not in st.session_state:
     st.session_state.last_saved = 0
+if 'last_auto_save' not in st.session_state:
+    st.session_state.last_auto_save = 0
 
 # Authentication
 def login():
@@ -124,92 +143,116 @@ def login():
             if VALID_USERS.get(user) == pwd:
                 st.session_state.auth = True
                 st.session_state.user = user
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("Invalid credentials")
 
 # Chat Interface
 def chat_interface():
+    # Auto-refresh every 5 seconds
+    st_autorefresh(interval=5 * 1000, key="chat_refresh")
+
     st.title(f"💌 {st.session_state.user}'s Secure Chat")
-    
-    # Display messages from session state
-    for msg in st.session_state.messages:
-        col = st.columns([1, 20])[1]
-        with col:
-            content = msg["content"]
-            if msg["type"].startswith("image"):
-                try:
-                    file_data = read_file(content)
-                    st.image(file_data, caption=msg.get("filename", ""), width=300)
-                except Exception as e:
-                    st.error(f"Error loading image: {str(e)}")
-            elif msg["type"] != "text":
-                try:
-                    file_data = read_file(content)
-                    st.download_button(
-                        label=f"📎 {msg['filename']}",
-                        data=file_data,
-                        file_name=msg["filename"],
-                        mime=msg["type"]
-                    )
-                except Exception as e:
-                    st.error(f"Error loading file: {str(e)}")
-            else:
-                st.markdown(f"""
-                <div class="message {'user-message' if msg["sender"] == st.session_state.user else 'other-message'}">
-                    <strong>{msg["sender"]}</strong><br>
-                    {content}
-                    <div class="timestamp">
-                        {msg["timestamp"]}
+
+    message_store = get_message_store()
+
+    # Create a placeholder for messages
+    message_placeholder = st.empty()
+
+    # Function to display messages
+    def display_messages():
+        messages = message_store.get_messages()
+        for msg in messages:
+            col = st.columns([1, 20])[1]
+            with col:
+                content = msg["content"]
+                if msg["type"].startswith("image"):
+                    try:
+                        file_data = read_file(content)
+                        st.image(file_data, caption=msg.get("filename", ""), width=300)
+                    except Exception as e:
+                        st.error(f"Error loading image: {str(e)}")
+                elif msg["type"] != "text" and os.path.exists(content):
+                    try:
+                        file_data = read_file(content)
+                        st.download_button(
+                            label=f"📎 {msg['filename']}",
+                            data=file_data,
+                            file_name=msg["filename"],
+                            mime=msg["type"]
+                        )
+                    except Exception as e:
+                        st.error(f"Error loading file: {str(e)}")
+                else:
+                    st.markdown(f"""
+                    <div class="message {'user-message' if msg["sender"] == st.session_state.user else 'other-message'}">
+                        <strong>{msg["sender"]}</strong><br>
+                        {content}
+                        <div class="timestamp">
+                            {msg["timestamp"]}
+                        </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+
+    # Display messages
+    with message_placeholder.container():
+        display_messages()
 
     # Message input
-    with st.form("chat", clear_on_submit=True):
-        text = st.text_input("Message", key="msg")
+    with st.form("chat_form"):
+        text_input_key = "msg_input"
+        if text_input_key not in st.session_state:
+            st.session_state[text_input_key] = ''
+        text = st.text_input("Message", key=text_input_key)
         file = st.file_uploader("Attach file", type=[
             "png", "jpg", "jpeg", "pdf", "docx", "mp4"
-        ])
-        
-        if st.form_submit_button("Send"):
-            new_msg = {
-                "sender": st.session_state.user,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "type": "text",
-                "content": text
-            }
-            
-            if file:
-                file_path = store_file(file)
-                new_msg.update({
-                    "type": file.type,
-                    "content": file_path,
-                    "filename": file.name
-                })
-            
-            st.session_state.messages.append(new_msg)
-            
-            # Save to GitHub if buffer size reached
-            if len(st.session_state.messages) - st.session_state.last_saved >= BUFFER_SIZE:
-                save_messages(st.session_state.messages)
-                st.session_state.last_saved = len(st.session_state.messages)
-            
-            st.rerun()
+        ], key='file_uploader')
+
+        submitted = st.form_submit_button("Send")
+        if submitted:
+            if not text and not file:
+                st.warning("Please enter a message or attach a file.")
+            else:
+                new_msg = {
+                    "sender": st.session_state.user,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": "text",
+                    "content": text
+                }
+
+                if file:
+                    file_path = store_file(file)
+                    new_msg.update({
+                        "type": file.type,
+                        "content": file_path,
+                        "filename": file.name
+                    })
+
+                message_store.add_message(new_msg)
+
+                # Save to GitHub if buffer size reached
+                if len(message_store.get_messages()) - st.session_state.last_saved >= BUFFER_SIZE:
+                    message_store.save_messages()
+                    st.session_state.last_saved = len(message_store.get_messages())
+
+                # Clear the text input and file uploader
+                st.session_state[text_input_key] = ''
+                st.session_state['file_uploader'] = None
+
+                # Update message display
+                with message_placeholder.container():
+                    display_messages()
 
     # Auto-save every 2 minutes
-    if time.time() - st.session_state.get("last_auto_save", 0) > 120:
-        save_messages(st.session_state.messages)
+    if time.time() - st.session_state.last_auto_save > 120:
+        message_store.save_messages()
         st.session_state.last_auto_save = time.time()
-        st.rerun()
 
+    # Logout Button
     if st.button("Logout"):
-        save_messages(st.session_state.messages)
+        message_store.save_messages()
         st.session_state.auth = False
-        st.rerun()
-
-    # Auto-refresh every 5 seconds
-    st.experimental_rerun()
+        st.experimental_rerun()
 
 # Main App
 if not st.session_state.auth:
