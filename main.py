@@ -224,25 +224,16 @@ def chat_interface():
     components.html(f"""
     <div id="scroll-to-me"></div>
     <script>
-        // Auto-scroll to bottom
         var anchor = document.getElementById("scroll-anchor");
         if (anchor) {{
             anchor.scrollIntoView({{behavior: "smooth"}});
         }}
-        
-        // Persistent focus on input
         var inputs = window.parent.document.querySelectorAll("input[type=text]");
-        if (inputs && inputs.length > 0) {{
-            // Focus on last input (should be message input)
+        if (inputs) {{
             inputs[inputs.length - 1].focus();
-            
-            // Add event listener to maintain focus
-            inputs[inputs.length - 1].addEventListener('blur', function() {{
-                this.focus();
-            }});
         }}
     </script>
-    """, height=0, key=f"focus_script_{st.session_state.render_counter}")
+    """, height=0)
 
     # Input form
     with st.markdown('<div class="fixed-bottom">', unsafe_allow_html=True):
@@ -286,8 +277,17 @@ def chat_interface():
                 message_store.save_messages()
                 st.session_state.last_saved = len(message_store.get_messages())
             st.session_state.form_counter += 1
-            st.session_state.render_counter += 1  # Increment render counter
+            st.session_state.render_counter += 1
             st.rerun()
+
+    if time.time() - st.session_state.last_auto_save > 120:
+        message_store.save_messages()
+        st.session_state.last_auto_save = time.time()
+
+    if st.button("Logout"):
+        message_store.save_messages()
+        st.session_state.auth = False
+        st.experimental_rerun()
 
 if not st.session_state.auth:
     login()
