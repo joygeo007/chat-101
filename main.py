@@ -11,6 +11,8 @@ from cryptography.fernet import Fernet
 from github import Github, InputFileContent
 from streamlit_autorefresh import st_autorefresh
 
+
+
 # Configuration
 UPLOAD_DIR = "uploads"
 Path(UPLOAD_DIR).mkdir(exist_ok=True)
@@ -147,6 +149,8 @@ def login():
             else:
                 st.error("Invalid credentials")
 
+# ... [Keep all previous configurations and helper functions the same] ...
+
 # Chat Interface
 def chat_interface():
     # Auto-refresh every 5 seconds
@@ -200,13 +204,17 @@ def chat_interface():
 
     # Message input
     with st.form("chat_form"):
-        text_input_key = "msg_input"
-        if text_input_key not in st.session_state:
-            st.session_state[text_input_key] = ''
+        # Generate unique keys using a counter
+        if 'form_counter' not in st.session_state:
+            st.session_state.form_counter = 0
+            
+        text_input_key = f"msg_input_{st.session_state.form_counter}"
+        file_uploader_key = f"file_uploader_{st.session_state.form_counter}"
+
         text = st.text_input("Message", key=text_input_key)
         file = st.file_uploader("Attach file", type=[
             "png", "jpg", "jpeg", "pdf", "docx", "mp4"
-        ], key='file_uploader')
+        ], key=file_uploader_key)
 
         submitted = st.form_submit_button("Send")
         if submitted:
@@ -235,13 +243,9 @@ def chat_interface():
                     message_store.save_messages()
                     st.session_state.last_saved = len(message_store.get_messages())
 
-                # Clear the text input and file uploader
-                st.session_state[text_input_key] = ''
-                st.session_state['file_uploader'] = None
-
-                # Update message display
-                with message_placeholder.container():
-                    display_messages()
+                # Force UI refresh by incrementing form counter
+                st.session_state.form_counter += 1
+                st.rerun()
 
     # Auto-save every 2 minutes
     if time.time() - st.session_state.last_auto_save > 120:
@@ -252,7 +256,7 @@ def chat_interface():
     if st.button("Logout"):
         message_store.save_messages()
         st.session_state.auth = False
-        st.rerun()
+        st.experimental_rerun()
 
 # Main App
 if not st.session_state.auth:
