@@ -3,3 +3,4 @@ cryptography==42.0.5
 PyGithub==2.2.0
 python-decouple==3.8
 requests==2.31.0
+streamlit-autorefresh
