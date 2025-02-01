@@ -5,11 +5,13 @@ import requests
 import os
 import time
 import threading
+import random
 from datetime import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet
 from github import Github, InputFileContent
 from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as components
 
 UPLOAD_DIR = "uploads"
 Path(UPLOAD_DIR).mkdir(exist_ok=True)
@@ -140,19 +142,13 @@ st.markdown(f"""
         overflow-y: auto;
         padding-bottom: 100px;
     }}
+    #scroll-anchor {{
+        height: 0px;
+        opacity: 0;
+    }}
 </style>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 """, unsafe_allow_html=True)
-
-st.components.v1.html("""
-<script>
-function autoScroll() {
-    window.scrollTo(0, document.body.scrollHeight);
-}
-window.addEventListener('load', autoScroll);
-document.addEventListener('DOMContentLoaded', autoScroll);
-</script>
-""")
 
 if 'auth' not in st.session_state:
     st.session_state.auth = False
@@ -162,6 +158,8 @@ if 'last_auto_save' not in st.session_state:
     st.session_state.last_auto_save = 0
 if 'form_counter' not in st.session_state:
     st.session_state.form_counter = 0
+if 'render_counter' not in st.session_state:
+    st.session_state.render_counter = 0
 
 def login():
     with st.form("login"):
@@ -209,17 +207,35 @@ def display_messages():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+    st.markdown('<div id="scroll-anchor"></div>', unsafe_allow_html=True)
 
 def chat_interface():
     st_autorefresh(interval=5000, key="chat_refresh")
     st.title(f"💌 {st.session_state.user}'s Secure Chat")
     message_store = get_message_store()
 
+    # Messages container
     with st.container():
         st.markdown('<div class="auto-scroll">', unsafe_allow_html=True)
         display_messages()
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # Auto-scroll and focus components
+    components.html(f"""
+    <div id="scroll-to-me"></div>
+    <script>
+        var anchor = document.getElementById("scroll-anchor");
+        if (anchor) {{
+            anchor.scrollIntoView({{behavior: "smooth"}});
+        }}
+        var inputs = window.parent.document.querySelectorAll("input[type=text]");
+        if (inputs) {{
+            inputs[inputs.length - 1].focus();
+        }}
+    </script>
+    """, height=0)
+
+    # Input form
     with st.markdown('<div class="fixed-bottom">', unsafe_allow_html=True):
         with st.form(key="chat_form", clear_on_submit=True):
             cols = st.columns([6, 1])
@@ -261,6 +277,7 @@ def chat_interface():
                 message_store.save_messages()
                 st.session_state.last_saved = len(message_store.get_messages())
             st.session_state.form_counter += 1
+            st.session_state.render_counter += 1
             st.rerun()
 
     if time.time() - st.session_state.last_auto_save > 120:
